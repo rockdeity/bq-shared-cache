@@ -57,8 +57,11 @@ class Test(unittest.TestCase):
         source_str = """
             with cte as (
                 SELECT * FROM `universe.galaxy.system`
+            ),
+            cte2 as (
+                SELECT * FROM `country.state.city`
             )
-            SELECT * FROM cte
+            SELECT * FROM cte JOIN cte2 USING (planet)
             """
         source = Source(source_str)
         encoded = EncodedSource(ParsedSource(source))
