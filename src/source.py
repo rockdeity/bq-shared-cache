@@ -46,17 +46,17 @@ class ParsedSource:
     def parsed_source(self) -> list[Tuple[sqlparse.sql.Statement]]:
         return self._parsed_source
 
+    def serialize(self) -> str:
+        raw_string = ";".join([serialize_tokens(statement.tokens) for statement in
+                               [tuple for tuple in self._parsed_source]])
+        return sqlparse.format(raw_string, reindent=True, keyword_case='upper')
+
     def __parse(self) -> list[Tuple[sqlparse.sql.Statement]]:
         split_statements = []
         for split in sqlparse.split(self._source.source()):
             parsed_split = sqlparse.parse(sqlparse.format(split, reindent=True, keyword_case='upper'))
-            split_statements.append(parsed_split)
-        return parsed_split
-
-    def serialize(self):
-        raw_string = ";".join([serialize_tokens(statement.tokens) for statement in
-                               [tuple for tuple in self._parsed_source]])
-        return sqlparse.format(raw_string, reindent=True, keyword_case='upper')
+            split_statements.extend(parsed_split)
+        return split_statements
 
 
 
@@ -65,6 +65,8 @@ class EncodedSource:
     def __init__(self,
                  parsed_source: ParsedSource):
         self._parsed_source = parsed_source
+        self._unnamed_statements, self._ctes = self._extract_ctes()
+        self._dependency_map = self._map_dependencies()
         self._encoded_source = self.__encode()
 
     def parsed_source(self) -> ParsedSource:
@@ -76,31 +78,17 @@ class EncodedSource:
     def ctes(self) -> Dict[str, List[Tuple[sqlparse.sql.Statement]]]:
         return self._ctes
 
+    def unnamed_statements(self):
+        return self._unnamed_statements
+
     # return dictionary of encoded hash and statement, keyed by statement name
     def __encode(self) -> Dict[str, Tuple[str, sqlparse.tokens]]:
+
         ctes = {}
-        dependencies = {}
-        for statement in self._parsed_source.parsed_source():
-            for cte_name, tokens in extract_ctes(statement.tokens):  # [x for x in statement.tokens if not x.is_whitespace]):
-                assert(ctes.get(cte_name) is None)
-                ctes[cte_name] = tokens
-
-            for cte_name, tokens in ctes.items():
-                for token in tokens:
-                    # TODO: might need recursive flatten here
-                    for flat_token in token.flatten():
-                        dependency = flat_token.value
-                        dependency_list = dependencies.get(cte_name, [])
-                        # see if we have a query which maps to this name
-                        if dependency in ctes.keys():
-                            dependency_list.append(dependency)
-                        dependencies[cte_name] = dependency_list
-                    dependencies[cte_name] = dependency_list
-
         encoded_ctes = {}
         encode_order = ctes.keys()
         # make sure we build in dependency order
-        def dependency_compare(x: str, y: str, dependencies: Dict[str, str] = dependencies):
+        def dependency_compare(x: str, y: str, dependencies: Dict[str, str] = self._dependency_map):
             if dependencies.get(y) and x in dependencies[y]:
                 return -1
             elif dependencies.get(x) and y in dependencies[x]:
@@ -117,7 +105,7 @@ class EncodedSource:
 
         # encode expressions
         for encode_key in sorted(encode_order, key=functools.cmp_to_key(dependency_compare)):
-            tokens = ctes[encode_key]
+            tokens = self._ctes[encode_key]
             replace_encoded(tokens)
             assert(not encoded_ctes.get(encode_key))
             formatted_cte = sqlparse.format(serialize_tokens(tokens))
@@ -128,6 +116,34 @@ class EncodedSource:
             encoded_ctes[encode_key] = (hashed, formatted_cte)
 
         return encoded_ctes  # return the final encoded statement
+
+    def _extract_ctes(self):
+        dependencies = {}
+        unnamed = []
+        ctes = {}
+        for statement in self._parsed_source.parsed_source():
+            for cte_name, tokens in extract_ctes(statement.tokens):  # [x for x in statement.tokens if not x.is_whitespace]):
+                assert (ctes.get(cte_name) is None)
+                if not cte_name:
+                    unnamed.append(tokens)
+                else:
+                    ctes[cte_name] = tokens
+        return unnamed, dependencies
+
+    def _map_dependencies(self):
+        dependencies = {}
+        for cte_name, tokens in self._ctes.items():
+            for token in tokens:
+                # TODO: might need recursive flatten here
+                for flat_token in token.flatten():
+                    dependency = flat_token.value
+                    dependency_list = dependencies.get(cte_name, [])
+                    # see if we have a query which maps to this name
+                    if dependency in ctes.keys():
+                        dependency_list.append(dependency)
+                    dependencies[cte_name] = dependency_list
+                dependencies[cte_name] = dependency_list
+        return dependencies
 
 
 def extract_ctes(tokens: sqlparse.tokens) -> Union[str, sqlparse.tokens]:
