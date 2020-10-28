@@ -3,7 +3,7 @@ import unittest
 
 import sqlparse
 
-from test.test_source_sql import complex_query, basic_str, basic_whitespace_str, cte_1, cte_2, join_clause
+from resources.test_source_sql import complex_query, basic_str, basic_whitespace_str, cte_1, cte_2, join_clause, date_dim_str
 
 sys.path.append("..")
 from src.source import Source, EncodedSource, ParsedSource, DecomposedSource
@@ -103,6 +103,18 @@ class Test(unittest.TestCase):
         source = Source(source_str)
         encoded = EncodedSource(DecomposedSource(ParsedSource(source)))
         self.assertIsNotNone(encoded)
+
+    def test_cte_date_dim_encode(self):
+        source_str = date_dim_str
+        encoded_source = EncodedSource(DecomposedSource(ParsedSource(Source(source_str))))
+        self.assertIsNotNone(encoded_source)
+        #self.assertEqual(complex_query, encoded_sources.parsed_sources().source())
+        for hash, encoded_source in zip(encoded_source.hashed_sources(), encoded_source.encoded_sources()):
+            print(
+                f"-----------------------------------\n"
+                f"{hash}"
+                f"\n-----------------------------------\n"
+                f"{encoded_source}")
 
     def test_cte_complex_encode(self):
         encoded_source = EncodedSource(DecomposedSource(ParsedSource(Source(complex_query))))
