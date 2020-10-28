@@ -1,10 +1,11 @@
 # Module for handling query source code
 
 from __future__ import annotations
-import functools
+
 import logging
+from typing import Union, Dict, List
+
 import sqlparse
-from typing import Tuple, Union, Dict, List
 
 logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s %(message)s',
@@ -64,7 +65,7 @@ class ParsedSource:
     def serialize(self) -> str:
         raw_string = ";".join([serialize_tokens(statement.tokens) for statement in
                                [tuple for tuple in self._parsed_statements]])
-        return sqlparse.format(raw_string, reindent=True, keyword_case='upper')
+        return sqlparse.format(raw_string, keyword_case='upper')
 
     def __parse(self) -> List[sqlparse.sql.Statement]:
         split_statements = []
@@ -91,19 +92,20 @@ class DecomposedSource:
 
     def __init__(self,
                  parsed_source: ParsedSource,
-                 top_level_statements: Dict[str, DecomposedSource] = None,
+                 known_dependencies: Dict[str, DecomposedSource] = {},
                  extract_statements = True,
                  alias: str = None):
         self._alias = alias
         self._dependencies = []
         self._parsed_sources = []
+        self._known_dependencies = known_dependencies
         if extract_statements:
             for statements in parsed_source.extract_statements():
                 for name, tokens in statements.items():
                     sub_source = ParsedSource(Source(serialize_tokens(tokens)))
                     decomposed_dependencies = self._decompose_dependencies(
                         sub_source,
-                        top_level_statements=top_level_statements or statements)
+                        top_level_statements=self._known_dependencies or statements)
                     self._dependencies.extend(decomposed_dependencies)
                     self._parsed_sources.append(sub_source)
         else:
@@ -111,7 +113,7 @@ class DecomposedSource:
                 sub_source = ParsedSource(Source(serialize_tokens(statement.tokens)))
                 decomposed_dependencies = self._decompose_dependencies(
                     sub_source,
-                    top_level_statements=top_level_statements)
+                    top_level_statements=self._known_dependencies)
                 self._dependencies.extend(decomposed_dependencies)
                 self._parsed_sources.append(sub_source)
 
@@ -130,7 +132,7 @@ class DecomposedSource:
 
     def serialize(self) -> str:
         raw_string = ";".join(parsed_source.serialize() for parsed_source in self.parsed_sources())
-        return sqlparse.format(raw_string, reindent=True, keyword_case='upper')
+        return sqlparse.format(raw_string, keyword_case='upper')
 
     def _decompose_dependencies(self,
                                 parsed_source: ParsedSource,
@@ -145,7 +147,7 @@ class DecomposedSource:
                 sub_source = ParsedSource(Source(serialize_tokens(tokens)))
                 statement_dependencies[dependency] = DecomposedSource(
                     sub_source,
-                    top_level_statements=top_level_statements,
+                    known_dependencies=top_level_statements,
                     alias=dependency,
                     extract_statements=False)
             all_statement_dependencies.append(statement_dependencies)
@@ -154,7 +156,7 @@ class DecomposedSource:
 
 class EncodedSource:
 
-    def __init__(self, decomposed_source: DecomposedSource):
+    def __init__(self, decomposed_source: DecomposedSource, known_dependencies: Dict[str, EncodedSource] = {}):
         assert(isinstance(decomposed_source, DecomposedSource))
         self._alias = decomposed_source.alias()
         self._decomposed_source = decomposed_source
@@ -162,24 +164,25 @@ class EncodedSource:
         self._hashed_sources = []
         self._encoded_sources = []
         self._encoded_dependencies = []
+        self._known_dependencies = known_dependencies
         for parsed_source, dependencies in zip(decomposed_source.parsed_sources(), decomposed_source.dependencies()):
             # recursively encode dependencies first
             for alias, dependency in dependencies.items():
-                encoded_dependency = EncodedSource(dependency)
+                encoded_dependency = EncodedSource(dependency, known_dependencies=known_dependencies)
                 self._encoded_dependencies.append(encoded_dependency)
             serialized = parsed_source.serialize()
-            for encoded_dependency in self.encoded_dependencies():
+            for encoded_dependency in self.direct_encoded_dependencies():
                 alias = encoded_dependency.decomposed_source().alias()
-                encoded_dependency_sources = encoded_dependency.hashed_sources()
-                assert(len(encoded_dependency_sources) == 1)
-                #if len(encoded_dependency_sources) > 0:
-                serialized = serialized.replace(alias, f"`{encoded_dependency_sources[0]}`")  # only one hashed value per dependency
+                hashed_dependency_sources = encoded_dependency.hashed_sources()
+                assert(len(hashed_dependency_sources) == 1) # assume only one top-level statement other than CTEs
+                serialized = serialized.replace(alias, f"`{hashed_dependency_sources[0]}`")  # only one hashed value per dependency
             self._encoded_sources.append(serialized)
             import hashlib
             hasher = hashlib.sha1()
             hasher.update(serialized.encode('utf-8'))
             hashed = hasher.hexdigest()
             self._hashed_sources.append(hashed)
+            known_dependencies[hashed] = self
 
     def decomposed_source(self) -> DecomposedSource:
         return self._decomposed_source
@@ -192,48 +195,17 @@ class EncodedSource:
     def hashed_sources(self) -> List[str]:
         return self._hashed_sources
 
-    def encoded_dependencies(self) -> List[EncodedSource]:
+    # direct encoded dependencies
+    def direct_encoded_dependencies(self) -> List[EncodedSource]:
         return self._encoded_dependencies
 
-    # return dictionary of encoded hash and statement, keyed by statement name
-    # def __encode(self) -> str:
-    #
-    #     serialized = self.decomposed_source().parsed_sources().serialize()
-    #     for encoded_dependency in self.encoded_dependencies():
-    #         alias = encoded_dependency.decomposed_source().alias()
-    #         encoded_dependency_sources = encoded_dependency.encoded_sources()
-    #         assert(len(encoded_dependency_sources) == 1)
-    #         serialized.replace(alias, encoded_dependency_sources[0])
-    #     return serialized
-        # make sure we build in dependency order
-        # def dependency_compare(x: DecomposedSource, y: DecomposedSource):
-        #     if y.dependencies().get(x.alias()):
-        #         return -1
-        #     elif x.dependencies().get(y.alias()):
-        #         return 1
-        #     return 0
+    # all encoded sources known by this source structure
+    def all_encoded_sources_by_name(self) -> Dict[str, EncodedSource]:
+        return self._known_dependencies
 
-        # def replace_encoded(tokens: sqlparse.tokens):
-        #     for token in tokens:
-        #         encoded_token = encoded_ctes.get(token.value)
-        #         if encoded_token:
-        #             token.value = f"`{encoded_token}`"
-        #         if token.is_group:
-        #             replace_encoded(token.tokens)
-        #
-        # # encode expressions
-        # for encode_key in sorted(encode_order, key=functools.cmp_to_key(dependency_compare)):
-        #     tokens = self._ctes[encode_key]
-        #     replace_encoded(tokens)
-        #     assert(not encoded_ctes.get(encode_key))
-        #     formatted_cte = sqlparse.format(serialize_tokens(tokens))
-        #     import hashlib
-        #     hasher = hashlib.sha1()
-        #     hasher.update(formatted_cte.encode('utf-8'))
-        #     hashed = hasher.hexdigest()
-        #     encoded_ctes[encode_key] = (hashed, formatted_cte)
-        #
-        # return encoded_ctes  # return the final encoded statement
+    @staticmethod
+    def from_str(source_str: str):
+        return EncodedSource(DecomposedSource(ParsedSource(Source(source_str))))
 
 
 def map_dependencies(statement: sqlparse.sql.Statement, known_aliases: List[str]) -> List[str]:
@@ -299,5 +271,6 @@ def extract_statements(tokens: sqlparse.tokens) -> Union[str, sqlparse.tokens]:
                 remaining_tokens.append(token)
 
     yield None, remaining_tokens # remaining_tokens[x for x in remaining_tokens if not x.is_whitespace]
+
 
 

@@ -1,6 +1,8 @@
 import sys
 import unittest
 
+import sqlparse
+
 from test.test_source_sql import complex_query, basic_str, basic_whitespace_str, cte_1, cte_2, join_clause
 
 sys.path.append("..")
@@ -106,7 +108,12 @@ class Test(unittest.TestCase):
         encoded_source = EncodedSource(DecomposedSource(ParsedSource(Source(complex_query))))
         self.assertIsNotNone(encoded_source)
         #self.assertEqual(complex_query, encoded_sources.parsed_sources().source())
-        print(encoded_source.encoded_sources())
+        for hash, encoded_source in zip(encoded_source.hashed_sources(), encoded_source.encoded_sources()):
+            print(
+                f"-----------------------------------\n"
+                f"{hash}"
+                f"\n-----------------------------------\n"
+                f"{encoded_source}")
 
     def test_cte_encode_matches(self):
         source_str = basic_str
