@@ -522,15 +522,14 @@ basic_whitespace_str = """
     FROM cte    JOIN cte2 USING (planet)
     """
 
-date_dim_str ="""
-with settings as (
+settings = """
   SELECT
     2019 as start_year
     ,2021 as end_year
-),
+"""
 
-planning_date_dim_table as (
-  select
+planning_date_dim_table = """
+select
     q1.*
     ,dense_rank() over (order by iso_year) as ysn -- year sequence number
     ,dense_rank() over (order by iso_week_id) as wsn -- week sequence number
@@ -566,10 +565,10 @@ planning_date_dim_table as (
   ) as q0
   ) as q1
   --order by 1
-),
+  """
 
-planning_week_dim_table as (
-  select
+planning_week_dim_table = """
+select
     wsn
     ,iso_year
     ,dt
@@ -592,17 +591,37 @@ planning_week_dim_table as (
     ,date_add(dt,interval (364+91-1) day) as ny_91d_end
   from planning_date_dim_table
   where is_mon = 1
-),
+"""
 
-weeks as (
+weeks = """
   select 
     wsn,
     iso_year,
     dt as ds,
     cy_07d_end as ds_week_end_dt
   from planning_week_dim_table
+"""
+
+date_dim_select = """
+select *, 3 as test, 4 as test2 from weeks
+"""
+
+date_dim_query = f"""
+with settings as (
+    {settings}
+),
+
+planning_date_dim_table as (
+  {planning_date_dim_table}
+),
+
+planning_week_dim_table as (
+  {planning_week_dim_table}
+),
+
+weeks as (
+    {weeks}
 )
 
-
-select *, 3 as test from weeks
+{date_dim_select}
 """

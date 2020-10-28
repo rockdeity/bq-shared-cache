@@ -6,9 +6,10 @@ import google.api_core
 from google.cloud import bigquery
 import json
 import logging
-from resources.test_source_sql import date_dim_str
+from resources.test_source_sql import date_dim_query
 from source import EncodedSource
 import time
+from typing import Union, Dict, List
 
 logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s %(message)s',
@@ -22,21 +23,45 @@ logger = logging.getLogger(__name__)
 def main(timeout, project, dataset):
     client = bigquery.Client(project=project)
     dataset_ref = client.dataset(dataset)
-    datasource = DataSource(EncodedSource.from_str(date_dim_str))
-    unbuilt = {}
-    unaliased = []
-    for hashed, source in datasource.encoded_sources().items():
-        if not source.alias():
-            logger.info(f"unaliased:{source}")
-            unaliased.append(source)
-            # logger.info(f"hash:{hashed} source:{source.encoded_sources()}")
-        try:
-            table_ref = client.get_table(f"{dataset}.{hashed}")
-            logger.info(f"table_ref:{table_ref}")
-        except google.api_core.exceptions.NotFound as e:
-            logger.error(f"err:{e}")
-            unbuilt[hashed] = source
-    logger.info(f"unbuilt:{unbuilt}")
+    datasource = DataSource(EncodedSource.from_str(date_dim_query))
+
+    completed = {}
+    running = {}
+
+    def apply_to_encoded(hashed: str, source: str, running: List[str] = running, completed: Dict[str, str] = completed):
+        this_completed = completed.get(hashed)
+        if not this_completed:
+            this_running = running.get(hashed)
+            if not this_running:
+                try:
+                    table_ref = client.get_table(f"{dataset}.{hashed}")
+                    completed[hashed] = table_ref
+                except google.api_core.exceptions.NotFound as e:
+                    logger.error(f"err:{e}")
+                    running[hashed] = True
+                    completed[hashed] = do_query(hashed, source)
+
+    def do_query(hash, sql):
+        logger.info(f"sql:{sql}")
+        tic = time.perf_counter()
+        query_config = google.cloud.bigquery.job.QueryJobConfig(
+            destination=f"{project}.{dataset}.{hash}",
+            default_dataset=dataset_ref,
+            priority=bigquery.QueryPriority.INTERACTIVE
+        )
+        df = client.query(
+            sql,
+            job_config=query_config,
+        ) #.to_dataframe()
+        toc = time.perf_counter()
+        logger.info(f"took:{toc - tic} seconds")
+        # logger.info(f"df:{df}")
+        return df
+
+    datasource.apply_dependency_first(apply_func=apply_to_encoded)
+    logger.info(f"completed:{completed}")
+
+
 
     # all_dependencies = Set()
     # with ThreadPoolExecutor(max_workers=1) as executor:
@@ -53,23 +78,23 @@ def main(timeout, project, dataset):
     #     #CREATE TABLE `massive-clone-705`.`triple_z_demand_prediction_prod`.`predictions_v7_product` (
     #     print(future.result())
 
-
-    for hash, source in unbuilt.items():
-        sql = source.encoded_sources()[0]
-        logger.info(f"sql:{sql}")
-        tic = time.perf_counter()
-        query_config = google.cloud.bigquery.job.QueryJobConfig(
-            destination=f"{project}.{dataset}.{hash}",
-            default_dataset=dataset_ref,
-            priority=bigquery.QueryPriority.INTERACTIVE
-        )
-        df = client.query(
-            sql,
-            job_config=query_config,
-        ).to_dataframe()
-        toc = time.perf_counter()
-        logger.info(f"took:{toc - tic} seconds")
-        logger.info(f"df:{df}")
+    #
+    # for hash, source in unbuilt.items():
+    #     sql = source.encoded_sources()[0]
+    #     logger.info(f"sql:{sql}")
+    #     tic = time.perf_counter()
+    #     query_config = google.cloud.bigquery.job.QueryJobConfig(
+    #         destination=f"{project}.{dataset}.{hash}",
+    #         default_dataset=dataset_ref,
+    #         priority=bigquery.QueryPriority.INTERACTIVE
+    #     )
+    #     df = client.query(
+    #         sql,
+    #         job_config=query_config,
+    #     ).to_dataframe()
+    #     toc = time.perf_counter()
+    #     logger.info(f"took:{toc - tic} seconds")
+    #     logger.info(f"df:{df}")
     # def get_df(client, project, dataset, table, day):
 #     table_standard_sql = f'{project}.{dataset}.{table}'
 #     sql = f"""

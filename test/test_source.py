@@ -3,7 +3,8 @@ import unittest
 
 import sqlparse
 
-from resources.test_source_sql import complex_query, basic_str, basic_whitespace_str, cte_1, cte_2, join_clause, date_dim_str
+from resources.test_source_sql import complex_query, basic_str, basic_whitespace_str, cte_1, cte_2, join_clause, \
+    date_dim_query, settings, planning_date_dim_table, planning_week_dim_table, weeks, date_dim_select
 
 sys.path.append("..")
 from src.source import Source, EncodedSource, ParsedSource, DecomposedSource
@@ -96,6 +97,18 @@ class Test(unittest.TestCase):
         self.assertEqual(ParsedSource(Source(cte_2)).serialize(), parsed_sources[1].serialize())
         self.assertEqual(ParsedSource(Source(join_clause)).serialize(), parsed_sources[2].serialize())
 
+    def test_date_decompose(self):
+
+        self.maxDiff = None
+        decomposed_source = DecomposedSource(ParsedSource(Source(date_dim_query)))
+        self.assertIsNotNone(decomposed_source)
+        parsed_sources = decomposed_source.parsed_sources()
+        self.assertEqual(ParsedSource(Source(settings)).serialize(reindent=True), parsed_sources[0].serialize(reindent=True))
+        self.assertEqual(ParsedSource(Source(planning_date_dim_table)).serialize(reindent=True), parsed_sources[1].serialize(reindent=True))
+        self.assertEqual(ParsedSource(Source(planning_week_dim_table)).serialize(reindent=True), parsed_sources[2].serialize(reindent=True))
+        self.assertEqual(ParsedSource(Source(weeks)).serialize(reindent=True), parsed_sources[3].serialize(reindent=True))
+        self.assertEqual(ParsedSource(Source(date_dim_select)).serialize(reindent=True), parsed_sources[4].serialize(reindent=True))
+
 
     def test_cte_basic_encode(self):
 
@@ -105,21 +118,25 @@ class Test(unittest.TestCase):
         self.assertIsNotNone(encoded)
 
     def test_cte_date_dim_encode(self):
-        source_str = date_dim_str
-        encoded_source = EncodedSource(DecomposedSource(ParsedSource(Source(source_str))))
-        self.assertIsNotNone(encoded_source)
-        #self.assertEqual(complex_query, encoded_sources.parsed_sources().source())
-        for hash, encoded_source in zip(encoded_source.hashed_sources(), encoded_source.encoded_sources()):
+        source_str = date_dim_query
+        encoded_source_root = EncodedSource(DecomposedSource(ParsedSource(Source(source_str))))
+        self.assertIsNotNone(encoded_source_root)
+        #self.assertEqual(complex_query, all_encoded_sources.parsed_sources().source())
+        for hash, encoded_source in zip(encoded_source_root.hashed_sources(), encoded_source_root.encoded_sources()):
             print(
                 f"-----------------------------------\n"
                 f"{hash}"
                 f"\n-----------------------------------\n"
                 f"{encoded_source}")
+        main_statement_encoded = EncodedSource.from_str(date_dim_select)
+        self.assertEqual(len(main_statement_encoded.all_encoded_sources()), 1)
+        # print(f"main_statement_encoded.all_encoded_sources(){main_statement_encoded.all_encoded_sources()}")
+        # print(f"encoded_source_root.all_encoded_sources(){encoded_source_root.all_encoded_sources()}")
 
     def test_cte_complex_encode(self):
         encoded_source = EncodedSource(DecomposedSource(ParsedSource(Source(complex_query))))
         self.assertIsNotNone(encoded_source)
-        #self.assertEqual(complex_query, encoded_sources.parsed_sources().source())
+        #self.assertEqual(complex_query, all_encoded_sources.parsed_sources().source())
         for hash, encoded_source in zip(encoded_source.hashed_sources(), encoded_source.encoded_sources()):
             print(
                 f"-----------------------------------\n"

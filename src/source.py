@@ -62,10 +62,10 @@ class ParsedSource:
     def parsed_statements(self) -> List[sqlparse.sql.Statement]:
         return self._parsed_statements
 
-    def serialize(self) -> str:
+    def serialize(self, reindent=False) -> str:
         raw_string = ";".join([serialize_tokens(statement.tokens) for statement in
                                [tuple for tuple in self._parsed_statements]])
-        return sqlparse.format(raw_string, keyword_case='upper')
+        return sqlparse.format(raw_string, reindent=reindent, keyword_case='upper')
 
     def __parse(self) -> List[sqlparse.sql.Statement]:
         split_statements = []
