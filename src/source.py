@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Union, Dict, List
+from typing import Union, Dict, List, Tuple
 
 import sqlparse
 
@@ -11,6 +11,10 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s %(message)s',
     level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def hash_reference(cte_reference: str) -> str:
+    return f"`{cte_reference}`"  #  f"( SELECT * FROM `{cte_reference}`)"
 
 
 class Source:
@@ -27,7 +31,9 @@ def clean(tokens: sqlparse.tokens, recurse=False) -> sqlparse.tokens:
     # trim extra whitespace
     prev_token = None
     for token in tokens:
-        if token.is_group and recurse:
+        if not isinstance(token, sqlparse.sql.Token):
+            ret_tokens.extend(clean(token, recurse=recurse))
+        elif token.is_group and recurse:
             ret_tokens.extend(clean(token.tokens, recurse=recurse))
         elif ((not token.is_whitespace or not prev_token or not prev_token.is_whitespace)
                 # trim comments
@@ -77,14 +83,13 @@ class ParsedSource:
                 split_statements.extend(stripped_tokens)
         return split_statements
 
-    def extract_statements(self) -> List[Dict[str, sqlparse.tokens]]:
+    def extract_statements(self, prefix: str) -> List[Tuple[str, sqlparse.tokens]]:
         statements = []
         for statement in self.parsed_statements():
-            ctes = {}
-            for cte_name, tokens in extract_statements(statement.tokens):
-                assert (ctes.get(cte_name) is None)
-                ctes[cte_name] = tokens
-            statements.append(ctes)
+            sub_statements = []
+            for sub_statement in extract_statements(statement.tokens, prefix):
+                sub_statements.append(sub_statement)
+            statements.append(sub_statements)
         return statements
 
 
@@ -94,16 +99,18 @@ class DecomposedSource:
                  parsed_source: ParsedSource,
                  known_dependencies: Dict[str, DecomposedSource] = None,
                  extract_statements = True,
-                 alias: str = None):
+                 alias: str = None,
+                 prefix: str = ""):
         self._alias = alias
         self._dependencies = []
         self._parsed_sources = []
         self._known_dependencies = known_dependencies
         if extract_statements:
-            for statements in parsed_source.extract_statements():
-                for name, tokens in statements.items():
+            for statements in parsed_source.extract_statements(prefix=prefix):
+                for name, tokens in statements:
                     sub_source = ParsedSource(Source(serialize_tokens(tokens)))
                     decomposed_dependencies = self._decompose_dependencies(
+                        name,
                         sub_source,
                         top_level_statements=self._known_dependencies or statements)
                     self._dependencies.extend(decomposed_dependencies)
@@ -112,11 +119,11 @@ class DecomposedSource:
             for statement in parsed_source.parsed_statements():
                 sub_source = ParsedSource(Source(serialize_tokens(statement.tokens)))
                 decomposed_dependencies = self._decompose_dependencies(
+                    self._alias,
                     sub_source,
                     top_level_statements=self._known_dependencies)
                 self._dependencies.extend(decomposed_dependencies)
                 self._parsed_sources.append(sub_source)
-
 
     def parsed_sources(self) -> List[ParsedSource]:
         return self._parsed_sources
@@ -135,6 +142,7 @@ class DecomposedSource:
         return sqlparse.format(raw_string, keyword_case='upper')
 
     def _decompose_dependencies(self,
+                                name: str,
                                 parsed_source: ParsedSource,
                                 top_level_statements: Dict[str, DecomposedSource]) -> List[Dict[str, DecomposedSource]]:
 
@@ -142,9 +150,10 @@ class DecomposedSource:
         # recursively decompose statements by dependency
         for statement in parsed_source.parsed_statements():
             statement_dependencies = {}
-            for dependency in map_dependencies(statement, known_aliases=list(top_level_statements.keys())):
-                tokens = top_level_statements.get(dependency)
-                sub_source = ParsedSource(Source(serialize_tokens(tokens)))
+            aliases = [statement_pair[0] for statement_pair in top_level_statements if statement_pair[0]]
+            for dependency in map_dependencies(name, statement, known_aliases=aliases):
+                dependency_tokens = next(statement_pair[1] for statement_pair in top_level_statements if statement_pair[0] == dependency)
+                sub_source = ParsedSource(Source(serialize_tokens(dependency_tokens)))
                 statement_dependencies[dependency] = DecomposedSource(
                     sub_source,
                     known_dependencies=top_level_statements,
@@ -170,12 +179,24 @@ class EncodedSource:
             for alias, dependency in dependencies.items():
                 encoded_dependency = EncodedSource(dependency, known_dependencies=self._known_dependencies)
                 self._encoded_dependencies.append(encoded_dependency)
-            serialized = parsed_source.serialize()
-            for encoded_dependency in self.direct_encoded_dependencies():
-                alias = encoded_dependency.decomposed_source().alias()
-                hashed_dependency_sources = encoded_dependency.hashed_sources()
-                assert(len(hashed_dependency_sources) == 1)  # assume only one top-level statement other than CTEs
-                serialized = serialized.replace(alias, f"`{hashed_dependency_sources[0]}`")  # only one hashed value per dependency
+            # render out source with its dependencies
+            serialized = ""
+            #serialized += ",".join([f"{dependency.serialize()}" for (alias, dependency) in dependencies.items()])
+            if self._encoded_dependencies:
+                serialized += "WITH "
+                serialized += ",\n".join([f"{dependency.alias()} AS (SELECT * FROM `{dependency.hashed_sources()[-1]}`)"
+                                        for dependency in self._encoded_dependencies]) + "\n"
+            if self._alias:
+                serialized += f"{parsed_source.serialize()}"  #  SELECT * FROM {self._alias}"
+            else:
+                serialized += f"{parsed_source.serialize()}"
+            #for encoded_dependency in self._encoded_dependencies():
+                # serialized = ",".join(encoded_dependency)
+                # alias = encoded_dependency.decomposed_source().alias()
+                # hashed_dependency_sources = encoded_dependency.hashed_sources()
+                # assert(len(hashed_dependency_sources) == 1)  # assume only one top-level statement other than CTEs
+                # serialized = serialized.replace(alias, hash_reference(hashed_dependency_sources[0]))
+
             self._encoded_sources.append(serialized)
             import hashlib
             hasher = hashlib.sha1()
@@ -210,41 +231,37 @@ class EncodedSource:
         return str(self.__dict__)
 
     @staticmethod
-    def from_str(source_str: str):
-        return EncodedSource(DecomposedSource(ParsedSource(Source(source_str))))
+    def from_str(source_str: str, prefix=""):
+        return EncodedSource(DecomposedSource(ParsedSource(Source(source_str)), prefix=prefix))
 
 
-def map_dependencies(statement: sqlparse.sql.Statement, known_aliases: List[str]) -> List[str]:
-    statement_dependencies = []
-    # for statement in statements:
-    single_dependencies = map_dependencies_single(known_aliases=known_aliases, tokens=statement.tokens)
-    #statement_dependencies.append(single_dependencies)
-    # if len(ctes) > 0:
-    #     dependencies.append(ctes)
+def map_dependencies(name: str, statement: sqlparse.sql.Statement, known_aliases: List[str]) -> List[str]:
+    single_dependencies = map_dependencies_single(name=name, known_aliases=known_aliases, tokens=statement.tokens)
     return single_dependencies
 
 
-def map_dependencies_single(known_aliases: List[str], tokens: sqlparse.tokens) -> List[str]:
+def map_dependencies_single(name: str, known_aliases: List[str], tokens: sqlparse.tokens) -> List[str]:
     dependency_list = []
     for token in tokens:
         # TODO: might need recursive flatten here
         for flat_token in token.flatten():
             dependency = flat_token.value
             # see if we have a query which maps to this name
-            if dependency in known_aliases:
+            if (not name or dependency != name) and dependency in known_aliases:
                 dependency_list.append(dependency)
         # dependencies[cte_name] = dependency_list
     return dependency_list
 
 
-def extract_statements(tokens: sqlparse.tokens) -> Union[str, sqlparse.tokens]:
+def extract_statements(tokens: sqlparse.tokens, prefix: str) -> Union[str, sqlparse.tokens]:
     remaining_tokens = []
     found_with = False
     expect_comma = False
+    encountered_non_whitespace = False
     for token in tokens:
         # from https://www.programcreek.com/python/?code=dbcli%2Flitecli%2Flitecli-master%2Flitecli%2Fpackages%2Fparseutils.py
-        if found_with and not expect_comma and isinstance(token, sqlparse.sql.IdentifierList):
-            item_list = token.get_identifiers()
+        if found_with and not expect_comma and (isinstance(token, sqlparse.sql.IdentifierList) or isinstance(token, sqlparse.sql.Identifier)):
+            item_list = token.get_identifiers() if isinstance(token, sqlparse.sql.IdentifierList) else [token]
             for identifier in item_list:
                 # Sometimes Keywords (such as FROM ) are classified as
                 # identifiers which don't have the get_real_name() method.
@@ -254,35 +271,52 @@ def extract_statements(tokens: sqlparse.tokens) -> Union[str, sqlparse.tokens]:
                     alias = identifier.get_alias()
                 except AttributeError:
                     continue
+                # we are starting a new identifier. return what we have so far and clear it for after the id
+                if remaining_tokens:
+                    yield None, remaining_tokens
+                    remaining_tokens = []
                 cte_tokens = identifier.tokens
+
+                # yield real_name, identifier
+
                 found_as = False
-                in_cte = False
                 for cte_token in cte_tokens:
-                    if not found_as and cte_token.value.upper() == 'AS':
-                        found_as = True
                     # are we defining a CTE identifier?
                     if found_as:
                         if type(cte_token) == sqlparse.sql.Parenthesis:
-                            between_parens = list(cte_token.tokens)[1:-1]
                             found_as = False
                             expect_comma = True
-                            yield real_name,  between_parens
-                    # non-cte identifier
-                    # else:
-                    #     yield real_name, cte_token
+                            # get everything between parens, the identifiers internals, to replace
+                            # return everything up to, including the opening paren, but but not including
+                            # the identifier internals, to replace
+                            between_parens = list(cte_token.tokens)[1:-1]
+                            #remaining_tokens.append(cte_token.tokens[0])
+                            remaining_tokens.append(between_parens)
+                            # now add everything after the internals, including trailing paren, and continue
+                            #remaining_tokens.append(cte_token.tokens[-1])
+                            yield real_name, remaining_tokens
+                            remaining_tokens = []
+                            break  # stop extracting this cte
+                    if not found_as and cte_token.value.upper() == 'AS':
+                        found_as = True
+                    #remaining_tokens.append(cte_token)
+            # else:
+            #     remaining_tokens.append(token)
+
 
         else:
             # if we are expecting a comma and see one, we expect another cte
-            if expect_comma and token.value == ",":
-                expect_comma = False
-                remaining_tokens.append(token)
-            elif token.value.upper() == 'WITH':
-                remaining_tokens = []
+            # if expect_comma and token.value == ",":
+            #     expect_comma = False
+            # el
+            if token.value.upper() == "WITH":
                 found_with = True
-            else:
+            elif not token.is_whitespace or encountered_non_whitespace:
+                encountered_non_whitespace = True
                 remaining_tokens.append(token)
 
-    yield None, remaining_tokens
+    if remaining_tokens:
+        yield None, remaining_tokens
 
 
 

@@ -6,7 +6,7 @@ import google.api_core
 from google.cloud import bigquery
 import json
 import logging
-from resources.test_source_sql import date_dim_query
+from resources.test_source_sql import date_dim_query, date_dim_query_sub_cached, offering_query, complex_query
 from source import EncodedSource
 import time
 from typing import Union, Dict, List
@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 def main(timeout, project, dataset):
     client = bigquery.Client(project=project)
     dataset_ref = client.dataset(dataset)
-    datasource = DataSource(EncodedSource.from_str(date_dim_query))
+    #datasource = DataSource(EncodedSource.from_str(date_dim_query_sub_cached, prefix="cached_"))
+    with open("resources/complex.sql", "r") as sql_file:
+        datasource = DataSource(EncodedSource.from_str(sql_file.read(), prefix="cached_"))
 
     completed = {}
     running = {}
@@ -36,6 +38,7 @@ def main(timeout, project, dataset):
                 try:
                     table_ref = client.get_table(f"{dataset}.{hashed}")
                     completed[hashed] = table_ref
+                    logger.info(f"dependencies met for hash:{hashed}")
                 except google.api_core.exceptions.NotFound as e:
                     logger.error(f"err:{e}")
                     running[hashed] = True
@@ -49,62 +52,21 @@ def main(timeout, project, dataset):
             default_dataset=dataset_ref,
             priority=bigquery.QueryPriority.INTERACTIVE
         )
-        df = client.query(
+        result = client.query(
             sql,
             job_config=query_config,
-        ) #.to_dataframe()
+        ).result()
         toc = time.perf_counter()
-        logger.info(f"took:{toc - tic} seconds")
+        logger.info(f"query took:{toc - tic} seconds")
         # logger.info(f"df:{df}")
-        return df
+        return result
 
+    tic = time.perf_counter()
     datasource.apply_dependency_first(apply_func=apply_to_encoded)
+    toc = time.perf_counter()
     logger.info(f"completed:{completed}")
+    logger.info(f"TOTAL queries took:{toc - tic} seconds")
 
-
-
-    # all_dependencies = Set()
-    # with ThreadPoolExecutor(max_workers=1) as executor:
-    #     future = executor.submit(pow, 323, 1235)
-    #     future_to_url = {executor.submit(load_url, url, 60): hashed, source for hashed, source in unbuilt.items()}
-    #     for future in concurrent.futures.as_completed(future_to_url):
-    #         url = future_to_url[future]
-    #         try:
-    #             data = future.result()
-    #         except Exception as exc:
-    #             print('%r generated an exception: %s' % (url, exc))
-    #         else:
-    #             print('%r page is %d bytes' % (url, len(data)))
-    #     #CREATE TABLE `massive-clone-705`.`triple_z_demand_prediction_prod`.`predictions_v7_product` (
-    #     print(future.result())
-
-    #
-    # for hash, source in unbuilt.items():
-    #     sql = source.encoded_sources()[0]
-    #     logger.info(f"sql:{sql}")
-    #     tic = time.perf_counter()
-    #     query_config = google.cloud.bigquery.job.QueryJobConfig(
-    #         destination=f"{project}.{dataset}.{hash}",
-    #         default_dataset=dataset_ref,
-    #         priority=bigquery.QueryPriority.INTERACTIVE
-    #     )
-    #     df = client.query(
-    #         sql,
-    #         job_config=query_config,
-    #     ).to_dataframe()
-    #     toc = time.perf_counter()
-    #     logger.info(f"took:{toc - tic} seconds")
-    #     logger.info(f"df:{df}")
-    # def get_df(client, project, dataset, table, day):
-#     table_standard_sql = f'{project}.{dataset}.{table}'
-#     sql = f"""
-#         select * from `{table_standard_sql}` where day = "{day}"
-#     """
-#     query_config = bigquery.QueryJobConfig()
-#
-#     tic = time.perf_counter()
-#     df = client.query(sql, job_config=query_config).to_dataframe()
-#     toc = time.perf_counter()
 
 
 

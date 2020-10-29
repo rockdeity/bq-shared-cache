@@ -625,3 +625,74 @@ weeks as (
 
 {date_dim_select}
 """
+
+date_dim_select_cached = """
+select *, 3 as test, 4 as test2 from cached_weeks
+"""
+
+date_dim_query_sub_cached = f"""
+with settings as (
+    {settings}
+),
+
+planning_date_dim_table as (
+  {planning_date_dim_table}
+),
+
+planning_week_dim_table as (
+  {planning_week_dim_table}
+),
+
+cached_weeks as (
+    {weeks}
+)
+
+{date_dim_select_cached}
+"""
+
+offering = """
+SELECT distinct 
+wsn,
+iso_year,
+ds,
+--   ds_end,
+product_style_id,
+product_id
+from weeks
+join (
+SELECT * 
+FROM
+  `stone-outpost-636.datamart.product_offering_fact`
+WHERE DATE(event_start_date) >= '2018-08-01' -- AND DATE(event_start_date)  <= '2020-08-14'
+) as pof
+on ds between date(event_start_date) and date(event_end_date)
+"""
+
+offering_select = """
+select * FROM offering
+"""
+
+offering_query = f"""
+with settings as (
+    {settings}
+),
+
+planning_date_dim_table as (
+  {planning_date_dim_table}
+),
+
+planning_week_dim_table as (
+  {planning_week_dim_table}
+),
+
+weeks as (
+    {weeks}
+),
+
+offering as (
+    {offering}
+)
+
+{offering_select}
+
+"""

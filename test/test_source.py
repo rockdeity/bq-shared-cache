@@ -4,7 +4,7 @@ import unittest
 import sqlparse
 
 from resources.test_source_sql import complex_query, basic_str, basic_whitespace_str, cte_1, cte_2, join_clause, \
-    date_dim_query, settings, planning_date_dim_table, planning_week_dim_table, weeks, date_dim_select
+    date_dim_query, settings, planning_date_dim_table, planning_week_dim_table, weeks, date_dim_select, date_dim_query_sub_cached
 
 sys.path.append("..")
 from src.source import Source, EncodedSource, ParsedSource, DecomposedSource
@@ -129,7 +129,7 @@ class Test(unittest.TestCase):
                 f"\n-----------------------------------\n"
                 f"{encoded_source}")
         main_statement_encoded = EncodedSource.from_str(date_dim_select)
-        self.assertEqual(len(main_statement_encoded.all_encoded_sources()), 1)
+        self.assertEqual(len(main_statement_encoded.all_encoded_sources_by_name()), 1)
         # print(f"main_statement_encoded.all_encoded_sources(){main_statement_encoded.all_encoded_sources()}")
         # print(f"encoded_source_root.all_encoded_sources(){encoded_source_root.all_encoded_sources()}")
 
@@ -151,6 +151,13 @@ class Test(unittest.TestCase):
         encoded_source_2 = EncodedSource(DecomposedSource(ParsedSource(Source(source_str_2))))
         self.assertIsNotNone(encoded_source_2)
         self.assertEqual(encoded_source.encoded_sources(), encoded_source_2.encoded_sources())
+
+    def test_cte_date_dim_encode_cached(self):
+        source_str = basic_str
+        encoded_source_root = EncodedSource.from_str(source_str, prefix="cached_")
+        self.assertIsNotNone(encoded_source_root)
+        # datasource = DataSource(encoded_source_root)
+        # self.assertIsNotNone(datasource)
 
 
 if __name__ == '__main__':
