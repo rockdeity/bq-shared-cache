@@ -627,7 +627,7 @@ weeks as (
 """
 
 date_dim_select_cached = """
-select *, 3 as test, 4 as test2 from cached_weeks
+select *, 3 as test from cached_weeks
 """
 
 date_dim_query_sub_cached = f"""
@@ -694,5 +694,34 @@ offering as (
 )
 
 {offering_select}
+
+"""
+
+offering_select_cached = """
+select * FROM cached_offering
+"""
+
+offering_query_cached = f"""
+with settings as (
+    {settings}
+),
+
+planning_date_dim_table as (
+  {planning_date_dim_table}
+),
+
+planning_week_dim_table as (
+  {planning_week_dim_table}
+),
+
+weeks as (
+    {weeks}
+),
+
+cached_offering as (
+    {offering}
+)
+
+{offering_select_cached}
 
 """

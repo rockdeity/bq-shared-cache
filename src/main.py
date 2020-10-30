@@ -6,7 +6,7 @@ import google.api_core
 from google.cloud import bigquery
 import json
 import logging
-from resources.test_source_sql import date_dim_query, date_dim_query_sub_cached, offering_query, complex_query
+from resources.test_source_sql import date_dim_query, date_dim_query_sub_cached, offering_query, complex_query, offering_query_cached
 from source import EncodedSource
 import time
 from typing import Union, Dict, List
@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 def main(timeout, project, dataset):
     client = bigquery.Client(project=project)
     dataset_ref = client.dataset(dataset)
-    #datasource = DataSource(EncodedSource.from_str(date_dim_query_sub_cached, prefix="cached_"))
+    #datasource = DataSource(EncodedSource.from_str(offering_query_cached, prefix="cached_"))
     with open("resources/complex.sql", "r") as sql_file:
         datasource = DataSource(EncodedSource.from_str(sql_file.read(), prefix="cached_"))
+        #datasource = DataSource(EncodedSource.from_str(sql_file.read(), prefix="nonsense_"))
 
     completed = {}
     running = {}
@@ -40,7 +41,7 @@ def main(timeout, project, dataset):
                     completed[hashed] = table_ref
                     logger.info(f"dependencies met for hash:{hashed}")
                 except google.api_core.exceptions.NotFound as e:
-                    logger.error(f"err:{e}")
+                    logger.info(f"dependencies NOT met for hash:{hashed}, building...")
                     running[hashed] = True
                     completed[hashed] = do_query(hashed, source)
 

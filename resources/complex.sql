@@ -311,6 +311,7 @@ cached_week_grouped_forecast_and_sales as (
 
 
 SELECT
+  ROUND(SAFE_DIVIDE(improvement_units_total, total_units), 4) as improvementPerSale_total_2,
   ROUND(SAFE_DIVIDE(improvement_units_total, total_units), 2) as improvementPerSale_total,
   ROUND(SAFE_DIVIDE(improvement_units_overstock, total_units), 2) as improvementPerSale_Overstock,
   ROUND(SAFE_DIVIDE(improvement_units_understock, total_units), 2) as improvementPerSale_Understock,
@@ -354,22 +355,9 @@ FROM (
       ROUND(STDDEV(ABS(week_grouped_forecast_sales - week_grouped_units)), 2) as SDAE,
       ROUND(STDDEV(ABS(week_snaive_units - week_grouped_units)), 2) as SDAE_snaive,
       ROUND(SAFE_DIVIDE(AVG(ABS(week_grouped_forecast_sales - week_grouped_units)), AVG(ABS(week_snaive_units - week_grouped_units))), 2) as MASE,
-      --ROUND(AVG(SAFE_DIVIDE(ABS(week_grouped_forecast_sales - week_grouped_units), ABS(week_snaive_units - week_grouped_units))), 2) as MASE,
-      --ROUND(STDDEV(SAFE_DIVIDE(ABS(week_grouped_forecast_sales - week_grouped_units), ABS(week_snaive_units - week_grouped_units))), 2) as SDASE,
-
-      -- ok_for_mase,
-      --divisionId,
-      --shortName
-      --lookahead_weeks,
-      --CAST(forecast_week_target_date as DATE) as forecast_week_target_date,
       CAST(forecast_week_source_date as DATE) as forecast_week_source_date
-
-      --DATE_ADD(CAST(ds as DATE), INTERVAL 7 DAY) as DS_END_DATE
-      --forecast_month
     FROM cached_week_grouped_forecast_and_sales
     WHERE 1=1
-      --AND ds >= DATE('2020-01-01')
-    -- ok_for_mase != 0
     GROUP BY
      forecast_week_source_date
    )

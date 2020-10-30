@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Union, Dict, List, Tuple
 
@@ -69,8 +70,7 @@ class ParsedSource:
         return self._parsed_statements
 
     def serialize(self, reindent=False) -> str:
-        raw_string = ";".join([serialize_tokens(statement.tokens) for statement in
-                               [tuple for tuple in self._parsed_statements]])
+        raw_string = ";".join([serialize_tokens(statement.tokens) for statement in self._parsed_statements])
         return sqlparse.format(raw_string, reindent=reindent, keyword_case='upper')
 
     def __parse(self) -> List[sqlparse.sql.Statement]:
@@ -83,11 +83,11 @@ class ParsedSource:
                 split_statements.extend(stripped_tokens)
         return split_statements
 
-    def extract_statements(self, prefix: str) -> List[Tuple[str, sqlparse.tokens]]:
+    def extract_statements(self) -> List[Tuple[str, sqlparse.tokens]]:
         statements = []
         for statement in self.parsed_statements():
             sub_statements = []
-            for sub_statement in extract_statements(statement.tokens, prefix):
+            for sub_statement in extract_statements(statement.tokens):
                 sub_statements.append(sub_statement)
             statements.append(sub_statements)
         return statements
@@ -99,14 +99,13 @@ class DecomposedSource:
                  parsed_source: ParsedSource,
                  known_dependencies: Dict[str, DecomposedSource] = None,
                  extract_statements = True,
-                 alias: str = None,
-                 prefix: str = ""):
+                 alias: str = None):
         self._alias = alias
         self._dependencies = []
         self._parsed_sources = []
         self._known_dependencies = known_dependencies
         if extract_statements:
-            for statements in parsed_source.extract_statements(prefix=prefix):
+            for statements in parsed_source.extract_statements():
                 for name, tokens in statements:
                     sub_source = ParsedSource(Source(serialize_tokens(tokens)))
                     decomposed_dependencies = self._decompose_dependencies(
@@ -131,15 +130,39 @@ class DecomposedSource:
     def statements(self) -> List[sqlparse.tokens]:
         return self._parsed_sources.statements()
 
-    def dependencies(self) -> List[Dict[str, DecomposedSource]]:
-        return self._dependencies
+    def dependencies(self, recurse: bool = False) -> List[Dict[str, DecomposedSource]]:
+        dependencies = self._dependencies
+        if recurse:
+            for dependency_map in dependencies:
+                for name, dependency in dependency_map.items():
+                    dependencies.extend(dependency.dependencies())
+        return dependencies
 
     def alias(self) -> str:
         return self._alias
 
-    def serialize(self) -> str:
-        raw_string = ";".join(parsed_source.serialize() for parsed_source in self.parsed_sources())
+    def serialize(self, recurse: bool = False, top_level: bool = True) -> str:
+        raw_string = ";".join([parsed_source.serialize() for parsed_source in self._parsed_sources])
         return sqlparse.format(raw_string, keyword_case='upper')
+
+    def has_dependency(self, potential_dependency: DecomposedSource, recurse: bool = True) -> bool:
+
+        ret_val = False
+        alias = potential_dependency.alias()
+        if alias:
+            ret_val = self._has_dependency(potential_dependency)
+            if recurse:
+                for dependency_mapping in self._dependencies:
+                    for decomposed_source in dependency_mapping.values():
+                        if decomposed_source.has_dependency(potential_dependency):
+                            ret_val = True
+                            break
+        return ret_val
+
+    def _has_dependency(self, potential_dependency: DecomposedSource) -> bool:
+        return potential_dependency.alias() and \
+               next((dep for dep in self.dependencies() if potential_dependency.alias() in dep.keys()), None) is not None
+
 
     def _decompose_dependencies(self,
                                 name: str,
@@ -165,7 +188,10 @@ class DecomposedSource:
 
 class EncodedSource:
 
-    def __init__(self, decomposed_source: DecomposedSource, known_dependencies: Dict[str, EncodedSource] = None):
+    def __init__(self,
+                 decomposed_source: DecomposedSource,
+                 known_dependencies: Dict[str, EncodedSource] = None,
+                 prefix: str = ""):
         assert(isinstance(decomposed_source, DecomposedSource))
         self._alias = decomposed_source.alias()
         self._decomposed_source = decomposed_source
@@ -176,27 +202,115 @@ class EncodedSource:
         self._known_dependencies = known_dependencies or {}
         for parsed_source, dependencies in zip(decomposed_source.parsed_sources(), decomposed_source.dependencies()):
             # recursively encode dependencies first
-            for alias, dependency in dependencies.items():
-                encoded_dependency = EncodedSource(dependency, known_dependencies=self._known_dependencies)
-                self._encoded_dependencies.append(encoded_dependency)
-            # render out source with its dependencies
+            sub_encoded_dependencies = []
+            include_source_dependencies = []
             serialized = ""
-            #serialized += ",".join([f"{dependency.serialize()}" for (alias, dependency) in dependencies.items()])
-            if self._encoded_dependencies:
-                serialized += "WITH "
-                serialized += ",\n".join([f"{dependency.alias()} AS (SELECT * FROM `{dependency.hashed_sources()[-1]}`)"
-                                        for dependency in self._encoded_dependencies]) + "\n"
-            if self._alias:
-                serialized += f"{parsed_source.serialize()}"  #  SELECT * FROM {self._alias}"
-            else:
-                serialized += f"{parsed_source.serialize()}"
-            #for encoded_dependency in self._encoded_dependencies():
-                # serialized = ",".join(encoded_dependency)
-                # alias = encoded_dependency.decomposed_source().alias()
-                # hashed_dependency_sources = encoded_dependency.hashed_sources()
-                # assert(len(hashed_dependency_sources) == 1)  # assume only one top-level statement other than CTEs
-                # serialized = serialized.replace(alias, hash_reference(hashed_dependency_sources[0]))
+            unencoded_dependencies_by_name = {}
+            for alias, dependency in dependencies.items():
+                if alias:
+                    if dependency.alias().startswith(prefix):
+                        encoded_dependency = EncodedSource(dependency, known_dependencies=self._known_dependencies, prefix=prefix)
+                        sub_encoded_dependencies.append(encoded_dependency)
+                        #all_encoded_dependencies[alias] = encoded_dependency
+                        #include_source_dependencies.append(f"{alias} AS (SELECT * FROM `{encoded_dependency.hashed_sources()[-1]}`)")
+                    else:
+                        unencoded_dependencies_by_name[alias] = dependency
+                        dependency_map_list = dependency.dependencies(recurse=True)
+                        for dependency_map in dependency_map_list:
+                            unencoded_dependencies_by_name.update(dependency_map)
+                    #include_source_dependencies.extend(f"{alias} AS ({dependency.serialize(recurse=True)})")
+            self._encoded_dependencies.append(sub_encoded_dependencies)
 
+            # determine ordering of dependencies to include.
+            for encoded_dependency in sub_encoded_dependencies:
+                # if we have encoded, prefer that. Remove from non-encoded
+                unencoded_dependencies_by_name.pop(encoded_dependency.alias(), None)
+                include_source_dependencies.append(encoded_dependency)
+            # now add non-encoded
+            for alias, dependency in unencoded_dependencies_by_name.items():
+                include_source_dependencies.append(dependency)
+
+            # https://stackoverflow.com/questions/47192626/deceptively-simple-implementation-of-topological-sorting-in-python
+            # def iterative_topological_sort(graph, start):
+            #     seen = set()
+            #     stack = []    # path variable is gone, stack and order are new
+            #     order = []    # order will be in reverse order at first
+            #     q = [start]
+            #     while q:
+            #         v = q.pop()
+            #         if v not in seen:
+            #             seen.add(v) # no need to append to path any more
+            #             q.extend(graph[v])
+            #
+            #             while stack and v not in graph[stack[-1]]:
+            #                 order.append(stack.pop())
+            #             stack.append(v)
+            #
+            #     return stack + order[::-1]
+
+            if include_source_dependencies:
+                logger.info(f"BEFORE include_source_dependencies:{[dep.alias() for dep in include_source_dependencies]}")
+                dep_graph = Graph(len(include_source_dependencies))
+                #start = [dep for dep in include_source_dependencies if dep.alias() in dependencies.keys()]
+                #logger.info(f"start deps:{[dep.alias() for dep in start]}")
+                idx_source = 0
+                for source in include_source_dependencies:
+                    if isinstance(source, EncodedSource):
+                        # source_dep_keys = list(source.decomposed_source().dependencies()[-1].keys())
+                        decomposed_source = source.decomposed_source()
+                    else:
+                        # source_dep_keys = list(source.dependencies()[-1].keys())
+                        decomposed_source = source
+                    idx_dep = 0
+                    #for dep in [dep for dep in include_source_dependencies if dep.alias() in source_dep_keys]:
+                    for target in include_source_dependencies:
+                        if source is not target and source.has_dependency(target):
+                            #logger.info(f"adding edge:source: {source.alias()} dep: {target.alias()}")
+                            dep_graph.addEdge(idx_dep, idx_source)
+                        idx_dep += 1
+                    idx_source += 1
+                sorted_indices = dep_graph.topologicalSort()
+                #logger.info(f"sorted_indices:{sorted_indices}")
+                include_source_dependencies_new = [include_source_dependencies[idx] for idx in sorted_indices]
+                include_source_dependencies = include_source_dependencies_new
+
+                # # Driver Code
+                # g = Graph(6)
+                # g.addEdge(5, 2)
+                # g.addEdge(5, 0)
+                # g.addEdge(4, 0)
+                # g.addEdge(4, 1)
+                # g.addEdge(2, 3)
+                # g.addEdge(3, 1)
+                #
+                # # Function Call
+                # logger.info(g.topologicalSort())
+
+
+# dep_graph = {}
+            # start = [dep for dep in include_source_dependencies if dep.alias() in dependencies.keys()]
+            # logger.info(f"start deps:{[dep.alias() for dep in start]}")
+            # dep_graph['start'] = start
+            # #logger.info(f"dep_graph:{dep_graph}")
+            # for source in include_source_dependencies:
+            #     source_dep_keys = []
+            #     if isinstance(source, EncodedSource):
+            #         source_dep_keys = list(source.decomposed_source().dependencies()[-1].keys())
+            #     else:
+            #         source_dep_keys = list(source.dependencies()[-1].keys())
+            #     #logger.info(f"source:{source.alias()} dep keys:{source_dep_keys}")
+            #     dep_graph[source] = [dep for dep in include_source_dependencies if dep.alias() in source_dep_keys]
+            # include_source_dependencies = list(reversed(iterative_topological_sort(dep_graph, 'start')))
+            # include_source_dependencies.remove('start')
+
+
+            logger.info(f"AFTER self:{self.alias()} include_source_dependencies:{[dep.alias() for dep in include_source_dependencies]}")
+
+            # render out source with its dependencies
+            if include_source_dependencies:
+                serialized += "WITH "
+                serialized += ",\n".join([f" {dep.alias()} AS ({dep.serialize()})" for dep in include_source_dependencies]) + "\n"
+            serialized += f"{parsed_source.serialize()}"
             self._encoded_sources.append(serialized)
             import hashlib
             hasher = hashlib.sha1()
@@ -220,19 +334,19 @@ class EncodedSource:
         return self._hashed_sources
 
     # direct encoded dependencies
-    def direct_encoded_dependencies(self) -> List[EncodedSource]:
+    def encoded_dependencies(self) -> List[List[EncodedSource]]:
         return self._encoded_dependencies
 
     # all encoded sources known by this source structure
     def all_encoded_sources_by_name(self) -> Dict[str, EncodedSource]:
         return self._known_dependencies
 
-    def __str__(self):
-        return str(self.__dict__)
+    def serialize(self, reindent=False) -> str:
+        return sqlparse.format(f"SELECT * FROM `{self._hashed_sources[-1]}`", reindent=reindent, keyword_case='upper')
 
     @staticmethod
     def from_str(source_str: str, prefix=""):
-        return EncodedSource(DecomposedSource(ParsedSource(Source(source_str)), prefix=prefix))
+        return EncodedSource(DecomposedSource(ParsedSource(Source(source_str))), prefix=prefix)
 
 
 def map_dependencies(name: str, statement: sqlparse.sql.Statement, known_aliases: List[str]) -> List[str]:
@@ -253,7 +367,7 @@ def map_dependencies_single(name: str, known_aliases: List[str], tokens: sqlpars
     return dependency_list
 
 
-def extract_statements(tokens: sqlparse.tokens, prefix: str) -> Union[str, sqlparse.tokens]:
+def extract_statements(tokens: sqlparse.tokens) -> Union[str, sqlparse.tokens]:
     remaining_tokens = []
     found_with = False
     expect_comma = False
@@ -266,9 +380,7 @@ def extract_statements(tokens: sqlparse.tokens, prefix: str) -> Union[str, sqlpa
                 # Sometimes Keywords (such as FROM ) are classified as
                 # identifiers which don't have the get_real_name() method.
                 try:
-                    schema_name = identifier.get_parent_name()
                     real_name = identifier.get_real_name()
-                    alias = identifier.get_alias()
                 except AttributeError:
                     continue
                 # we are starting a new identifier. return what we have so far and clear it for after the id
@@ -290,18 +402,13 @@ def extract_statements(tokens: sqlparse.tokens, prefix: str) -> Union[str, sqlpa
                             # return everything up to, including the opening paren, but but not including
                             # the identifier internals, to replace
                             between_parens = list(cte_token.tokens)[1:-1]
-                            #remaining_tokens.append(cte_token.tokens[0])
                             remaining_tokens.append(between_parens)
                             # now add everything after the internals, including trailing paren, and continue
-                            #remaining_tokens.append(cte_token.tokens[-1])
                             yield real_name, remaining_tokens
                             remaining_tokens = []
                             break  # stop extracting this cte
                     if not found_as and cte_token.value.upper() == 'AS':
                         found_as = True
-                    #remaining_tokens.append(cte_token)
-            # else:
-            #     remaining_tokens.append(token)
 
 
         else:
@@ -317,6 +424,67 @@ def extract_statements(tokens: sqlparse.tokens, prefix: str) -> Union[str, sqlpa
 
     if remaining_tokens:
         yield None, remaining_tokens
+
+
+
+# Class to represent a graph
+from collections import defaultdict
+class Graph:
+    def __init__(self, vertices):
+        self.graph = defaultdict(list)  # dictionary containing adjacency List
+        self.V = vertices  # No. of vertices
+
+    # function to add an edge to graph
+    def addEdge(self, u, v):
+        self.graph[u].append(v)
+
+        # A recursive function used by topologicalSort
+    def topologicalSortUtil(self, v, visited, stack):
+
+        # Mark the current node as visited.
+        visited[v] = True
+
+        # Recur for all the vertices adjacent to this vertex
+        for i in self.graph[v]:
+            if visited[i] == False:
+                self.topologicalSortUtil(i, visited, stack)
+
+        # Push current vertex to stack which stores result
+        stack.append(v)
+
+        # The function to do Topological Sort. It uses recursive
+    # topologicalSortUtil()
+    def topologicalSort(self):
+        # Mark all the vertices as not visited
+        visited = [False]*self.V
+        stack = []
+
+        # Call the recursive helper function to store Topological
+        # Sort starting from all vertices one by one
+        for i in range(self.V):
+            if visited[i] == False:
+                self.topologicalSortUtil(i, visited, stack)
+
+                # Print contents of the stack
+        return stack[::-1]  # return list in reverse order
+
+# def sort_by_dependence(x, y):
+#     if isinstance(x, EncodedSource):
+#         x = x.decomposed_source()
+#     if isinstance(y, EncodedSource):
+#         y = y.decomposed_source()
+#     # x a dependency of y?
+#     ret_val = 0
+#     if y.has_dependency(x, recurse=True):
+#         ret_val = -1
+#     elif x.has_dependency(y, recurse=True):
+#         ret_val = 1
+#     logger.info("--")
+#     logger.info(f"{ret_val} x.alias(): {x.alias()} x:{x} y.alias():{y.alias()} y:{y}")
+#     return ret_val
+# include_source_dependencies.sort(key=functools.cmp_to_key(sort_by_dependence))
+# logger.info(f"dependency order:{','.join([dep.alias() for dep in include_source_dependencies])}")
+
 
 
 
