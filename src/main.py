@@ -26,7 +26,6 @@ def main(timeout, project, dataset):
     #datasource = DataSource(EncodedSource.from_str(offering_query_cached, prefix="cached_"))
     with open("resources/complex.sql", "r") as sql_file:
         datasource = DataSource(EncodedSource.from_str(sql_file.read(), prefix="cached_"))
-        #datasource = DataSource(EncodedSource.from_str(sql_file.read(), prefix="nonsense_"))
 
     completed = {}
     running = {}
@@ -53,12 +52,15 @@ def main(timeout, project, dataset):
             default_dataset=dataset_ref,
             priority=bigquery.QueryPriority.INTERACTIVE
         )
-        result = client.query(
+        query_job = client.query(
             sql,
             job_config=query_config,
-        ).result()
+        )
+        result = query_job.result()
         toc = time.perf_counter()
         logger.info(f"query took:{toc - tic} seconds")
+        logger.info(f"total bytes processed:{query_job.total_bytes_processed:,}")
+        logger.info(f"result:{result}")
         # logger.info(f"df:{df}")
         return result
 

@@ -35,7 +35,7 @@ class Test(unittest.TestCase):
 
     def test_simplified_complex_encode(self):
         with open("../resources/complex_simplified.sql", "r") as sql_file:
-            datasource = DataSource(EncodedSource.from_str(sql_file.read(), prefix="nonsense_"))
+            datasource = DataSource(EncodedSource.from_str(sql_file.read(), prefix="cached_"))
             self.assertIsNotNone(datasource)
 
     def test_complex_encode(self):

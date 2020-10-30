@@ -249,22 +249,20 @@ class EncodedSource:
             #     return stack + order[::-1]
 
             if include_source_dependencies:
-                logger.info(f"BEFORE include_source_dependencies:{[dep.alias() for dep in include_source_dependencies]}")
+                #logger.info(f"BEFORE include_source_dependencies:{[dep.alias() for dep in include_source_dependencies]}")
                 dep_graph = Graph(len(include_source_dependencies))
                 #start = [dep for dep in include_source_dependencies if dep.alias() in dependencies.keys()]
                 #logger.info(f"start deps:{[dep.alias() for dep in start]}")
                 idx_source = 0
                 for source in include_source_dependencies:
                     if isinstance(source, EncodedSource):
-                        # source_dep_keys = list(source.decomposed_source().dependencies()[-1].keys())
                         decomposed_source = source.decomposed_source()
                     else:
-                        # source_dep_keys = list(source.dependencies()[-1].keys())
                         decomposed_source = source
                     idx_dep = 0
                     #for dep in [dep for dep in include_source_dependencies if dep.alias() in source_dep_keys]:
                     for target in include_source_dependencies:
-                        if source is not target and source.has_dependency(target):
+                        if decomposed_source is not target and decomposed_source.has_dependency(target):
                             #logger.info(f"adding edge:source: {source.alias()} dep: {target.alias()}")
                             dep_graph.addEdge(idx_dep, idx_source)
                         idx_dep += 1
@@ -274,37 +272,8 @@ class EncodedSource:
                 include_source_dependencies_new = [include_source_dependencies[idx] for idx in sorted_indices]
                 include_source_dependencies = include_source_dependencies_new
 
-                # # Driver Code
-                # g = Graph(6)
-                # g.addEdge(5, 2)
-                # g.addEdge(5, 0)
-                # g.addEdge(4, 0)
-                # g.addEdge(4, 1)
-                # g.addEdge(2, 3)
-                # g.addEdge(3, 1)
-                #
-                # # Function Call
-                # logger.info(g.topologicalSort())
 
-
-# dep_graph = {}
-            # start = [dep for dep in include_source_dependencies if dep.alias() in dependencies.keys()]
-            # logger.info(f"start deps:{[dep.alias() for dep in start]}")
-            # dep_graph['start'] = start
-            # #logger.info(f"dep_graph:{dep_graph}")
-            # for source in include_source_dependencies:
-            #     source_dep_keys = []
-            #     if isinstance(source, EncodedSource):
-            #         source_dep_keys = list(source.decomposed_source().dependencies()[-1].keys())
-            #     else:
-            #         source_dep_keys = list(source.dependencies()[-1].keys())
-            #     #logger.info(f"source:{source.alias()} dep keys:{source_dep_keys}")
-            #     dep_graph[source] = [dep for dep in include_source_dependencies if dep.alias() in source_dep_keys]
-            # include_source_dependencies = list(reversed(iterative_topological_sort(dep_graph, 'start')))
-            # include_source_dependencies.remove('start')
-
-
-            logger.info(f"AFTER self:{self.alias()} include_source_dependencies:{[dep.alias() for dep in include_source_dependencies]}")
+            #logger.info(f"AFTER self:{self.alias()} include_source_dependencies:{[dep.alias() for dep in include_source_dependencies]}")
 
             # render out source with its dependencies
             if include_source_dependencies:

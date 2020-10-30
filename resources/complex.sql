@@ -4,6 +4,7 @@ with settings as (
   SELECT
     2019 as start_year
     ,2021 as end_year
+  ,2023 as following_year_27
 ),
 
 planning_date_dim_table as (
@@ -214,7 +215,8 @@ latest_forecasts AS (
     snaive_units,
     ok_for_mase,
     cohort,
-    hld_beg_wsn
+    hld_beg_wsn,
+    3 as three
   FROM (
     SELECT
       forecasts.ds as forecast_week_target_ds,
@@ -311,10 +313,9 @@ cached_week_grouped_forecast_and_sales as (
 
 
 SELECT
-  ROUND(SAFE_DIVIDE(improvement_units_total, total_units), 4) as improvementPerSale_total_2,
   ROUND(SAFE_DIVIDE(improvement_units_total, total_units), 2) as improvementPerSale_total,
   ROUND(SAFE_DIVIDE(improvement_units_overstock, total_units), 2) as improvementPerSale_Overstock,
-  ROUND(SAFE_DIVIDE(improvement_units_understock, total_units), 2) as improvementPerSale_Understock,
+  ROUND(SAFE_DIVIDE(improvement_units_understock, total_units), 4) as improvementPerSale_Understock_d,
   *
 FROM (
 
@@ -329,9 +330,11 @@ FROM (
      *
   FROM
     (SELECT
-      --cohort,
+      --cohort, this is a comment
       --bracket,
+
       count(*) as count,
+      SUM(week_snaive_units) as week_snaive_units_5,
       CAST(ROUND(SUM(week_grouped_forecast_sales - week_grouped_units)) as int64) as total_error,
       CAST(ROUND(SUM(ABS(week_grouped_forecast_sales - week_grouped_units))) as int64) as total_abs_error,
       SUM(week_snaive_units - week_grouped_units) as total_error_snaive,
