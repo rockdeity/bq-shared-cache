@@ -395,7 +395,7 @@ def extract_statements(tokens: sqlparse.tokens) -> Union[str, sqlparse.tokens]:
         yield None, remaining_tokens
 
 
-
+# https://www.geeksforgeeks.org/topological-sorting/
 # Class to represent a graph
 from collections import defaultdict
 class Graph:
